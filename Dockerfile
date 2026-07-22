@@ -8,8 +8,8 @@ RUN npm run build
 FROM golang:1.22-alpine AS go-builder
 RUN apk add --no-cache git
 WORKDIR /build
-COPY go.mod .
-RUN go mod tidy
+COPY go.mod go.sum .
+RUN go mod download
 COPY . .
 COPY --from=web-builder /web/dist ./internal/server/web
 RUN CGO_ENABLED=0 go build -tags prod -o /build/subme ./cmd/subme
