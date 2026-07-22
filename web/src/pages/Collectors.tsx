@@ -48,7 +48,7 @@ export default function Collectors() {
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-title">上传 Collector</div>
         <div className="form-group">
-          <label>名称（字母、数字、横线、下划线）</label>
+          <label>名称（字母、数字、横线、下划线、点）</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="my-provider" />
         </div>
         <div className="form-group">

@@ -2,25 +2,28 @@ package scheduler
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 )
 
 type RefreshFunc func(ctx context.Context) error
 
+type LogFunc func(level, msg string)
+
 type Scheduler struct {
 	interval      time.Duration
 	refreshFn     RefreshFunc
+	logFn         LogFunc
 	cancel        context.CancelFunc
 	mu            sync.Mutex
 	running       bool
 }
 
-func New(interval int, fn RefreshFunc) *Scheduler {
+func New(interval int, fn RefreshFunc, logFn LogFunc) *Scheduler {
 	return &Scheduler{
 		interval:  time.Duration(interval) * time.Second,
 		refreshFn: fn,
+		logFn:     logFn,
 	}
 }
 
@@ -41,12 +44,18 @@ func (s *Scheduler) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
-				log.Println("scheduler: auto refresh starting")
+				if s.logFn != nil {
+					s.logFn("info", "scheduler: auto refresh starting")
+				}
 				if err := s.refreshFn(ctx); err != nil {
-					log.Printf("scheduler: refresh error: %v", err)
+					if s.logFn != nil {
+						s.logFn("error", "scheduler: refresh error: "+err.Error())
+					}
 				}
 			case <-ctx.Done():
-				log.Println("scheduler: stopped")
+				if s.logFn != nil {
+					s.logFn("info", "scheduler: stopped")
+				}
 				return
 			}
 		}

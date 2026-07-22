@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const defaultTimeout = 30 * time.Second
+const defaultTimeout = 60 * time.Second
 
 type Config struct {
 	ScriptDir  string // directory containing collector.js and _shared/
@@ -28,6 +28,7 @@ type Result struct {
 	PanelURL        string
 	SubscriptionURL string
 	UpdateConfig    map[string]string
+	ViaProxy        bool
 	Error           string
 	Stderr          string
 }
@@ -37,6 +38,7 @@ type collectorOutput struct {
 	PanelURL        string            `json:"panel_url"`
 	SubscriptionURL string            `json:"subscription_url"`
 	UpdateConfig    map[string]string `json:"update_config,omitempty"`
+	ViaProxy        bool              `json:"via_proxy"`
 	Error           string            `json:"error,omitempty"`
 }
 
@@ -61,7 +63,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return &Result{Error: "collector timed out"}, nil
+			return &Result{Error: "collector timed out", Stderr: stderr.String()}, nil
 		}
 		return &Result{Error: fmt.Sprintf("collector process error: %v", err), Stderr: stderr.String()}, nil
 	}
@@ -79,6 +81,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		PanelURL:        out.PanelURL,
 		SubscriptionURL: out.SubscriptionURL,
 		UpdateConfig:    out.UpdateConfig,
+		ViaProxy:        out.ViaProxy,
 		Error:           out.Error,
 		Stderr:          stderr.String(),
 	}

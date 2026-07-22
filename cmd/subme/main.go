@@ -50,20 +50,28 @@ func main() {
 		log.Fatalf("create server: %v", err)
 	}
 
+	logLevel := "info"
+	if envLevel := os.Getenv("SUBME_LOG_LEVEL"); envLevel != "" {
+		logLevel = envLevel
+	}
+	srv.SetLogLevel(logLevel)
+
 	handler := srv.Handler()
 
 	hasUsers, _ := database.HasUsers()
 	if hasUsers {
-		log.Println("initial refresh starting...")
+		srv.LogInfo("initial refresh starting...")
 		srv.RefreshAllSync()
-		log.Println("initial refresh complete")
+		srv.LogInfo("initial refresh complete")
 	} else {
-		log.Println("no admin user registered yet; waiting for first registration")
+		srv.LogInfo("no admin user registered yet; waiting for first registration")
 	}
 
 	sched := scheduler.New(settings.RefreshInterval, func(ctx context.Context) error {
 		srv.RefreshAllSync()
 		return nil
+	}, func(level, msg string) {
+		srv.Logf(level, "%s", msg)
 	})
 	sched.Start(context.Background())
 
@@ -76,12 +84,12 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		log.Println("shutting down...")
+		srv.LogInfo("shutting down...")
 		sched.Stop()
 		httpServer.Shutdown(context.Background())
 	}()
 
-	log.Printf("SubMe listening on :%d", *port)
+	srv.LogInfo(fmt.Sprintf("SubMe listening on :%d", *port))
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}

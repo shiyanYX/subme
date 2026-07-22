@@ -1,8 +1,19 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+
+const LEVELS = ['all', 'debug', 'info', 'warn', 'error'] as const
+type LogLevel = typeof LEVELS[number]
+
+const LEVEL_ORDER: Record<string, number> = { debug: 0, info: 1, warn: 2, error: 3 }
+
+function levelMatch(filter: LogLevel, level: string): boolean {
+  if (filter === 'all') return true
+  return LEVEL_ORDER[level] >= LEVEL_ORDER[filter]
+}
 
 export default function Logs() {
   const [logs, setLogs] = useState<any[]>([])
   const [connected, setConnected] = useState(false)
+  const [levelFilter, setLevelFilter] = useState<LogLevel>('all')
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -39,15 +50,29 @@ export default function Logs() {
     }
   }, [])
 
+  const filteredLogs = useMemo(() => {
+    return levelFilter === 'all' ? logs : logs.filter(l => levelMatch(levelFilter, l.level))
+  }, [logs, levelFilter])
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [logs])
+  }, [filteredLogs])
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h2 style={{ fontSize: 20 }}>运行日志</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            className="select"
+            value={levelFilter}
+            onChange={e => setLevelFilter(e.target.value as LogLevel)}
+            style={{ fontSize: 13, padding: '4px 8px' }}
+          >
+            {LEVELS.map(l => (
+              <option key={l} value={l}>{l.toUpperCase()}</option>
+            ))}
+          </select>
           <span className={`badge ${connected ? 'badge-ok' : 'badge-fail'}`}>
             {connected ? '已连接' : '已断开'}
           </span>
@@ -56,10 +81,10 @@ export default function Logs() {
       </div>
 
       <div className="log-container">
-        {logs.length === 0 ? (
-          <div style={{ color: '#888' }}>等待日志...</div>
+        {filteredLogs.length === 0 ? (
+          <div style={{ color: '#888' }}>{logs.length === 0 ? '等待日志...' : '无匹配日志'}</div>
         ) : (
-          logs.map((log, i) => (
+          filteredLogs.map((log, i) => (
             <div className="log-entry" key={i}>
               <span className="log-time">{new Date(log.time).toLocaleTimeString()}</span>
               {' '}

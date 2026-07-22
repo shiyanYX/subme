@@ -259,6 +259,7 @@ th {
 .log-entry { margin-bottom: 2px; }
 .log-time { color: #888; }
 .log-info { color: #52c41a; }
+.log-warn { color: #faad14; }
 .log-error { color: #ff4d4f; }
 .log-debug { color: #888; }
 
