@@ -1,0 +1,907 @@
+package server
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/subme-app/subme/internal/cache"
+	"github.com/subme-app/subme/internal/collector"
+	"github.com/subme-app/subme/internal/config"
+	"github.com/subme-app/subme/internal/db"
+	"github.com/subme-app/subme/internal/notify"
+	"gopkg.in/yaml.v3"
+)
+
+var webFS fs.FS
+
+type LogEntry struct {
+	Time    time.Time `json:"time"`
+	Level   string    `json:"level"`
+	Message string    `json:"message"`
+}
+
+type Server struct {
+	db            *db.DB
+	cache         *cache.Cache
+	collectCfg    collector.Config
+	notifier      *notify.Notifier
+	settings      *config.SystemSettings
+	logs          []LogEntry
+	logMu         sync.Mutex
+	logSubs       map[string]chan LogEntry
+	logSubMu      sync.Mutex
+	collectorsDir string
+}
+
+func New(database *db.DB, cacheDir string, settings *config.SystemSettings, collectorsDir string) (*Server, error) {
+	c, err := cache.New(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+
+	notifierCfg := &notify.Config{
+		AppToken: settings.WxPusher.AppToken,
+		UIDs:     settings.WxPusher.UIDs,
+	}
+
+	srv := &Server{
+		db:            database,
+		cache:         c,
+		notifier:      notify.New(notifierCfg),
+		settings:      settings,
+		logs:          make([]LogEntry, 0, 1000),
+		logSubs:       make(map[string]chan LogEntry),
+		collectorsDir: collectorsDir,
+		collectCfg: collector.Config{
+			Proxy: settings.Proxy,
+		},
+	}
+
+	settings.RefreshInterval = defaultRefreshInterval(srv.settings.RefreshInterval)
+	return srv, nil
+}
+
+func (s *Server) addLog(level, msg string) {
+	entry := LogEntry{Time: time.Now(), Level: level, Message: msg}
+	s.logMu.Lock()
+	s.logs = append(s.logs, entry)
+	if len(s.logs) > 1000 {
+		s.logs = s.logs[len(s.logs)-1000:]
+	}
+	s.logMu.Unlock()
+
+	s.logSubMu.Lock()
+	for _, ch := range s.logSubs {
+		select {
+		case ch <- entry:
+		default:
+		}
+	}
+	s.logSubMu.Unlock()
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /sub/{clashName}", s.handleGetSubscription)
+
+	mux.HandleFunc("GET /api/sub/{clashName}/content", s.handleGetSubscriptionContent)
+
+	mux.HandleFunc("GET /api/dashboard", s.handleDashboard)
+
+	mux.HandleFunc("GET /api/providers", s.handleListProviders)
+	mux.HandleFunc("POST /api/providers", s.handleCreateProvider)
+	mux.HandleFunc("GET /api/providers/{id}", s.handleGetProvider)
+	mux.HandleFunc("PUT /api/providers/{id}", s.handleUpdateProvider)
+	mux.HandleFunc("DELETE /api/providers/{id}", s.handleDeleteProvider)
+	mux.HandleFunc("POST /api/providers/{id}/test", s.handleTestProvider)
+	mux.HandleFunc("POST /api/providers/{id}/refresh", s.handleRefreshProvider)
+	mux.HandleFunc("POST /api/refresh", s.handleRefreshAll)
+
+	mux.HandleFunc("GET /api/logs", s.handleLogsSSE)
+
+	mux.HandleFunc("POST /api/register", s.handleRegister)
+	mux.HandleFunc("POST /api/login", s.handleLogin)
+
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+
+	mux.HandleFunc("GET /api/configs", s.handleListCollectors)
+	mux.HandleFunc("POST /api/configs/upload", s.handleUploadCollector)
+
+	mux.HandleFunc("GET /api/test-sub", func(w http.ResponseWriter, r *http.Request) {
+		sampleYAML := `port: 7890
+socks-port: 7891
+mode: rule
+log-level: info
+
+proxies:
+  - name: "HK-01"
+    type: ss
+    server: 1.2.3.4
+    port: 443
+    cipher: chacha20-ietf-poly1305
+    password: "test-password-123"
+    udp: true
+  - name: "JP-01"
+    type: ss
+    server: 5.6.7.8
+    port: 443
+    cipher: aes-256-gcm
+    password: "test-password-456"
+    udp: true
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - HK-01
+      - JP-01
+
+rules:
+  - MATCH,Proxy
+`
+		w.Header().Set("Content-Type", "application/x-yaml")
+		w.Write([]byte(sampleYAML))
+	})
+
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]string{"status": "ok"})
+	})
+
+	apiMux := corsMiddleware(authMiddleware(s, mux))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sub/") {
+			apiMux.ServeHTTP(w, r)
+			return
+		}
+		// SPA fallback: serve index.html for all non-file routes
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name == "" {
+			name = "index.html"
+		}
+		if _, err := fs.Stat(webFS, name); err != nil {
+			name = "index.html"
+		}
+		data, err := fs.ReadFile(webFS, name)
+		if err != nil {
+			name = "index.html"
+			data, err = fs.ReadFile(webFS, name)
+			if err != nil {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}
+		ct := "text/plain"
+		if strings.HasSuffix(name, ".html") {
+			ct = "text/html; charset=utf-8"
+		} else if strings.HasSuffix(name, ".css") {
+			ct = "text/css; charset=utf-8"
+		} else if strings.HasSuffix(name, ".js") {
+			ct = "application/javascript"
+		} else if strings.HasSuffix(name, ".json") {
+			ct = "application/json"
+		} else if strings.HasSuffix(name, ".svg") {
+			ct = "image/svg+xml"
+		} else if strings.HasSuffix(name, ".png") {
+			ct = "image/png"
+		} else if strings.HasSuffix(name, ".ico") {
+			ct = "image/x-icon"
+		}
+		w.Header().Set("Content-Type", ct)
+		w.Write(data)
+	})
+}
+
+func (s *Server) handleGetSubscription(w http.ResponseWriter, r *http.Request) {
+	clashName := r.PathValue("clashName")
+	entry, err := s.cache.Get(clashName)
+	if err != nil {
+		http.Error(w, "subscription not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-yaml")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(entry.YAML)
+}
+
+func (s *Server) handleGetSubscriptionContent(w http.ResponseWriter, r *http.Request) {
+	clashName := r.PathValue("clashName")
+	entry, err := s.cache.Get(clashName)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "subscription not found"})
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"clash_name": clashName,
+		"yaml":       string(entry.YAML),
+		"last_fetch": entry.LastFetch.Format("2006-01-02 15:04:05"),
+	})
+}
+
+func countProxies(yamlData []byte) int {
+	var doc struct {
+		Proxies []interface{} `yaml:"proxies"`
+	}
+	if err := yaml.Unmarshal(yamlData, &doc); err != nil {
+		return 0
+	}
+	return len(doc.Proxies)
+}
+
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.db.ListProviders()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+
+	cachedNames, _ := s.cache.List()
+	cacheMap := make(map[string]bool)
+	for _, n := range cachedNames {
+		cacheMap[n] = true
+	}
+
+	var cards []map[string]interface{}
+	totalProxies := 0
+	for _, p := range providers {
+		card := map[string]interface{}{
+			"id":           p.ID,
+			"clash_name":   p.ClashName,
+			"panel_url":    p.PanelURL,
+			"collector":    p.CollectorName,
+			"has_cache":    cacheMap[p.ClashName],
+			"last_fetch":   nil,
+			"proxy_count":  0,
+		}
+		if cacheMap[p.ClashName] {
+			if entry, err := s.cache.Get(p.ClashName); err == nil {
+				card["last_fetch"] = entry.LastFetch.Format("2006-01-02 15:04:05")
+				card["proxy_count"] = countProxies(entry.YAML)
+				totalProxies += card["proxy_count"].(int)
+			}
+		}
+		cards = append(cards, card)
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"providers":     cards,
+		"total":         len(providers),
+		"cached":        len(cacheMap),
+		"total_proxies": totalProxies,
+	})
+}
+
+func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
+	providers, err := s.db.ListProviders()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	if providers == nil {
+		providers = []db.Provider{}
+	}
+	writeJSON(w, providers)
+}
+
+func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
+	var p db.Provider
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if p.ClashName == "" {
+		http.Error(w, "clash_name is required", http.StatusBadRequest)
+		return
+	}
+	if p.CollectorName == "" {
+		http.Error(w, "collector_name is required", http.StatusBadRequest)
+		return
+	}
+	scriptPath := filepath.Join(s.collectorsDir, p.CollectorName, "collector.js")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		http.Error(w, fmt.Sprintf("collector.js not found for %s", p.CollectorName), http.StatusBadRequest)
+		return
+	}
+	if p.Interval <= 0 {
+		p.Interval = 3600
+	}
+
+	cfgPath := s.buildConfigPath(p.ClashName)
+	p.ConfigPath = cfgPath
+
+	id, err := s.db.CreateProvider(&p)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.writeCollectorConfig(p); err != nil {
+		s.addLog("error", fmt.Sprintf("failed to write collector config for %s: %v", p.ClashName, err))
+	}
+
+	p.ID = id
+	writeJSON(w, p)
+}
+
+func (s *Server) handleGetProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	p, err := s.db.GetProvider(id)
+	if err != nil {
+		http.Error(w, "provider not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, p)
+}
+
+func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	var p db.Provider
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	p.ID = id
+	if err := s.db.UpdateProvider(&p); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.writeCollectorConfig(p); err != nil {
+		s.addLog("error", fmt.Sprintf("failed to update collector config for %s: %v", p.ClashName, err))
+	}
+
+	writeJSON(w, p)
+}
+
+func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	p, err := s.db.GetProvider(id)
+	if err == nil {
+		s.cache.Delete(p.ClashName)
+		os.RemoveAll(s.providerDir(p.ClashName))
+	}
+	if err := s.db.DeleteProvider(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		CollectorName string `json:"collector_name"`
+		PanelURL    string `json:"panel_url"`
+		LandingPage string `json:"landing_page"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if body.CollectorName == "" {
+		http.Error(w, "collector_name is required", http.StatusBadRequest)
+		return
+	}
+
+	collectorDir := filepath.Join(s.collectorsDir, body.CollectorName)
+	absCollectorDir, _ := filepath.Abs(collectorDir)
+	scriptPath := filepath.Join(absCollectorDir, "collector.js")
+
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		writeJSON(w, map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("collector.js not found for %s", body.CollectorName),
+		})
+		return
+	}
+
+	s.addLog("info", fmt.Sprintf("testing connection: collector=%s username=%s", body.CollectorName, body.Username))
+
+	tmpConfigPath := filepath.Join(absCollectorDir, "_test_config.yaml")
+	pc := &config.ProviderConfig{
+		ClashName:   "_test",
+		Interval:    3600,
+		PanelURL:    body.PanelURL,
+		LandingPage: body.LandingPage,
+		Username:    body.Username,
+		Password:    body.Password,
+	}
+	if err := config.SaveProviderConfig(tmpConfigPath, pc); err != nil {
+		writeJSON(w, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	defer os.Remove(tmpConfigPath)
+
+	cfg := collector.Config{
+		ScriptDir:   absCollectorDir,
+		ConfigPath: tmpConfigPath,
+		Proxy:      s.collectCfg.Proxy,
+	}
+
+	result, err := collector.Run(r.Context(), cfg)
+	if err != nil {
+		s.addLog("error", fmt.Sprintf("test connection error: %v", err))
+		writeJSON(w, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+
+	if !result.Success {
+		s.addLog("error", fmt.Sprintf("test connection failed: %s | stderr: %s", result.Error, result.Stderr))
+	}
+
+	writeJSON(w, result)
+}
+
+func (s *Server) handleRefreshProvider(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	p, err := s.db.GetProvider(id)
+	if err != nil {
+		http.Error(w, "provider not found", http.StatusNotFound)
+		return
+	}
+
+	go s.refreshProvider(p)
+	writeJSON(w, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleRefreshAll(w http.ResponseWriter, r *http.Request) {
+	go s.refreshAll()
+	writeJSON(w, map[string]string{"status": "started"})
+}
+
+func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush() // send headers immediately so EventSource.onopen fires
+
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	ch := make(chan LogEntry, 64)
+	s.logSubMu.Lock()
+	s.logSubs[id] = ch
+	s.logSubMu.Unlock()
+
+	defer func() {
+		s.logSubMu.Lock()
+		delete(s.logSubs, id)
+		s.logSubMu.Unlock()
+	}()
+
+	ctx := r.Context()
+	for {
+		select {
+		case entry := <-ch:
+			data, _ := json.Marshal(entry)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	hasUsers, err := s.db.HasUsers()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if hasUsers {
+		http.Error(w, "admin already exists", http.StatusForbidden)
+		return
+	}
+
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if body.Username == "" || body.Password == "" {
+		http.Error(w, "username and password required", http.StatusBadRequest)
+		return
+	}
+
+	hash := hashPassword(body.Password)
+	if err := s.db.RegisterUser(body.Username, hash); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	user, err := s.db.GetUser(body.Username)
+	if err != nil {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if user.PasswordHash != hashPassword(body.Password) {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	token := hashPassword(body.Username + ":" + time.Now().String())
+	writeJSON(w, map[string]string{"token": token})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.settings)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var newSettings config.SystemSettings
+	if err := json.NewDecoder(r.Body).Decode(&newSettings); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Persist to DB
+	s.db.SetSetting("refresh_interval", fmt.Sprintf("%d", newSettings.RefreshInterval))
+	s.db.SetSetting("proxy", newSettings.Proxy)
+	s.db.SetSetting("wxpusher_app_token", newSettings.WxPusher.AppToken)
+	s.db.SetSetting("wxpusher_uids", fmt.Sprintf("%v", newSettings.WxPusher.UIDs))
+
+	s.settings = &newSettings
+	s.collectCfg.Proxy = newSettings.Proxy
+	s.notifier = notify.New(&notify.Config{
+		AppToken: newSettings.WxPusher.AppToken,
+		UIDs:     newSettings.WxPusher.UIDs,
+	})
+
+	s.addLog("info", fmt.Sprintf("settings updated: proxy=%s", newSettings.Proxy))
+
+	writeJSON(w, s.settings)
+}
+
+func (s *Server) handleListCollectors(w http.ResponseWriter, r *http.Request) {
+	entries, err := listCollectorDirs(s.collectorsDir)
+	if err != nil {
+		writeJSON(w, []string{})
+		return
+	}
+	writeJSON(w, entries)
+}
+
+func (s *Server) handleUploadCollector(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid form data"})
+		return
+	}
+
+	name := r.FormValue("name")
+	if name == "" {
+		writeJSON(w, map[string]string{"error": "name is required"})
+		return
+	}
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	if !validName.MatchString(name) {
+		writeJSON(w, map[string]string{"error": "name must be alphanumeric, hyphens, or underscores only"})
+		return
+	}
+
+	collectorFile, _, err := r.FormFile("collector")
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "collector.js file is required"})
+		return
+	}
+	defer collectorFile.Close()
+
+	collectorData, err := io.ReadAll(collectorFile)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "failed to read collector.js"})
+		return
+	}
+
+	dir := filepath.Join(s.collectorsDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		writeJSON(w, map[string]string{"error": "failed to create directory"})
+		return
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "collector.js"), collectorData, 0644); err != nil {
+		writeJSON(w, map[string]string{"error": "failed to write collector.js"})
+		return
+	}
+
+	configFile, _, err := r.FormFile("config")
+	if err == nil {
+		defer configFile.Close()
+		configData, _ := io.ReadAll(configFile)
+		if len(configData) > 0 {
+			os.WriteFile(filepath.Join(dir, "config.yaml"), configData, 0644)
+		}
+	} else {
+		defaultConfig := fmt.Sprintf(`clash_name: %s
+interval: 3600
+panel_url: ""
+landing_page: ""
+username: ""
+password: ""
+`, name)
+		os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(defaultConfig), 0644)
+	}
+
+	s.addLog("info", fmt.Sprintf("collector uploaded: %s (%d bytes)", name, len(collectorData)))
+	writeJSON(w, map[string]string{"status": "ok", "name": name})
+}
+
+func (s *Server) refreshProvider(p *db.Provider) {
+	s.addLog("info", fmt.Sprintf("refreshing provider: %s", p.ClashName))
+
+	if p.ConfigPath == "" {
+		s.addLog("error", fmt.Sprintf("no config path for provider %s", p.ClashName))
+		return
+	}
+
+	collectorDir, _ := filepath.Abs(filepath.Join(s.collectorsDir, p.CollectorName))
+	configPath, _ := filepath.Abs(p.ConfigPath)
+	scriptPath := filepath.Join(collectorDir, "collector.js")
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		s.addLog("error", fmt.Sprintf("collector.js not found: collector=%s path=%s", p.CollectorName, scriptPath))
+		return
+	}
+
+	cfg := collector.Config{
+		ScriptDir:   collectorDir,
+		ConfigPath: configPath,
+		Proxy:      s.collectCfg.Proxy,
+	}
+
+	result, err := collector.Run(context.Background(), cfg)
+	if err != nil {
+		s.addLog("error", fmt.Sprintf("collector error for %s: %v", p.ClashName, err))
+		s.notifyIfNeeded(p.ClashName, false, fmt.Sprintf("collector error: %v", err))
+		return
+	}
+
+	if !result.Success {
+		s.addLog("error", fmt.Sprintf("collector failed for %s: %s | stderr: %s", p.ClashName, result.Error, result.Stderr))
+		s.notifyIfNeeded(p.ClashName, false, result.Error)
+		return
+	}
+
+	if result.UpdateConfig != nil {
+		s.addLog("info", fmt.Sprintf("updating config for %s with new panel_url", p.ClashName))
+		if err := config.UpdateProviderConfig(p.ConfigPath, result.UpdateConfig); err != nil {
+			s.addLog("error", fmt.Sprintf("update config failed for %s: %v", p.ClashName, err))
+		}
+	}
+
+	subscriptionYAML, err := fetchSubscription(result.SubscriptionURL, s.collectCfg.Proxy)
+	if err != nil {
+		s.addLog("error", fmt.Sprintf("fetch subscription failed for %s: %v", p.ClashName, err))
+		s.notifyIfNeeded(p.ClashName, false, fmt.Sprintf("fetch subscription failed: %v", err))
+		return
+	}
+
+	if err := s.cache.Set(p.ClashName, subscriptionYAML); err != nil {
+		s.addLog("error", fmt.Sprintf("cache write failed for %s: %v", p.ClashName, err))
+		return
+	}
+
+	s.addLog("info", fmt.Sprintf("successfully refreshed %s (%d bytes)", p.ClashName, len(subscriptionYAML)))
+}
+
+func (s *Server) refreshAll() {
+	s.addLog("info", "refreshing all providers")
+	providers, err := s.db.ListProviders()
+	if err != nil {
+		s.addLog("error", fmt.Sprintf("list providers: %v", err))
+		return
+	}
+
+	var wg sync.WaitGroup
+	for _, p := range providers {
+		wg.Add(1)
+		go func(prov db.Provider) {
+			defer wg.Done()
+			s.refreshProvider(&prov)
+		}(p)
+	}
+	wg.Wait()
+	s.addLog("info", "all providers refreshed")
+}
+
+func (s *Server) RefreshAllSync() {
+	s.refreshAll()
+}
+
+func (s *Server) notifyIfNeeded(provider string, success bool, message string) {
+	if success {
+		return
+	}
+	if s.settings.NotifyOn.CollectFailure || s.settings.NotifyOn.RefreshFailure {
+		event := notify.Event{
+			Provider: provider,
+			Success:  success,
+			Message:  message,
+		}
+		if err := s.notifier.Send(event); err != nil {
+			s.addLog("error", fmt.Sprintf("notification error: %v", err))
+		}
+	}
+}
+
+func (s *Server) buildConfigPath(clashName string) string {
+	return s.providerDir(clashName) + string(os.PathSeparator) + "config.yaml"
+}
+
+func (s *Server) providerDir(clashName string) string {
+	return s.collectorsDir + string(os.PathSeparator) + clashName
+}
+
+func (s *Server) writeCollectorConfig(p db.Provider) error {
+	dir := s.providerDir(p.ClashName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	pc := &config.ProviderConfig{
+		ClashName:   p.ClashName,
+		Interval:    p.Interval,
+		PanelURL:    p.PanelURL,
+		LandingPage: p.LandingPage,
+		Username:    p.Username,
+		Password:    p.Password,
+	}
+	return config.SaveProviderConfig(s.buildConfigPath(p.ClashName), pc)
+}
+
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func hashPassword(pw string) string {
+	h := sha256.Sum256([]byte(pw))
+	return hex.EncodeToString(h[:])
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func authMiddleware(s *Server, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		publicPaths := []string{"/api/register", "/api/login", "/api/health"}
+		for _, p := range publicPaths {
+			if path == p {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		if strings.HasPrefix(path, "/sub/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if strings.HasPrefix(path, "/api/") {
+			hasUsers, err := s.db.HasUsers()
+			if err != nil || !hasUsers {
+				http.Error(w, "no admin registered", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func listCollectorDirs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		scriptPath := filepath.Join(dir, e.Name(), "collector.js")
+		if _, err := os.Stat(scriptPath); err == nil {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	return dirs, nil
+}
+
+func fetchSubscription(rawURL, proxy string) ([]byte, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", "SubMe/1.0")
+
+	if proxy != "" {
+		proxyURL, parseErr := url.Parse(proxy)
+		if parseErr == nil {
+			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+			client.Transport = transport
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch status: %d", resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func defaultRefreshInterval(interval int) int {
+	if interval <= 0 {
+		return 3600
+	}
+	return interval
+}

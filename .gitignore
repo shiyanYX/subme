@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+*.exe
+*.test
+data/
+cache/
+collectors/
+web/dist/
+internal/server/web/
