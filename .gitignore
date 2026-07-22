@@ -5,6 +5,9 @@ dist/
 *.test
 data/
 cache/
-collectors/
+collectors/*
+!collectors/_shared/
+collectors/_shared/*
+!collectors/_shared/http.js
 web/dist/
 internal/server/web/
