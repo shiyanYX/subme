@@ -147,6 +147,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/configs", s.handleListCollectors)
 	mux.HandleFunc("POST /api/configs/upload", s.handleUploadCollector)
+	mux.HandleFunc("DELETE /api/configs/{name}", s.handleDeleteCollector)
+	mux.HandleFunc("PUT /api/configs/{name}", s.handleRenameCollector)
 
 	mux.HandleFunc("GET /api/test-sub", func(w http.ResponseWriter, r *http.Request) {
 		sampleYAML := `port: 7890
@@ -804,6 +806,55 @@ password: ""
 
 	s.addLog(LevelInfo, fmt.Sprintf("collector uploaded: %s (%d bytes)", name, len(collectorData)))
 	writeJSON(w, map[string]string{"status": "ok", "name": name})
+}
+
+func (s *Server) handleDeleteCollector(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	dir := filepath.Join(s.collectorsDir, name)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		writeJSON(w, map[string]string{"error": "collector not found"})
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		s.addLog(LevelError, fmt.Sprintf("delete collector %s: %v", name, err))
+		writeJSON(w, map[string]string{"error": "failed to delete"})
+		return
+	}
+	s.addLog(LevelInfo, fmt.Sprintf("collector deleted: %s", name))
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRenameCollector(w http.ResponseWriter, r *http.Request) {
+	oldName := r.PathValue("name")
+	var body struct {
+		NewName string `json:"new_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NewName == "" {
+		writeJSON(w, map[string]string{"error": "new_name is required"})
+		return
+	}
+	validName := regexp.MustCompile(`^[\p{L}0-9_.-]+$`)
+	if !validName.MatchString(body.NewName) {
+		writeJSON(w, map[string]string{"error": "new_name must be alphanumeric, hyphens, or underscores only"})
+		return
+	}
+	oldDir := filepath.Join(s.collectorsDir, oldName)
+	newDir := filepath.Join(s.collectorsDir, body.NewName)
+	if _, err := os.Stat(oldDir); os.IsNotExist(err) {
+		writeJSON(w, map[string]string{"error": "collector not found"})
+		return
+	}
+	if _, err := os.Stat(newDir); err == nil {
+		writeJSON(w, map[string]string{"error": "target name already exists"})
+		return
+	}
+	if err := os.Rename(oldDir, newDir); err != nil {
+		s.addLog(LevelError, fmt.Sprintf("rename collector %s -> %s: %v", oldName, body.NewName, err))
+		writeJSON(w, map[string]string{"error": "failed to rename"})
+		return
+	}
+	s.addLog(LevelInfo, fmt.Sprintf("collector renamed: %s -> %s", oldName, body.NewName))
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 func (s *Server) refreshProvider(p *db.Provider) {

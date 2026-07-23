@@ -100,6 +100,19 @@ export async function getCollectors() {
   return res.json()
 }
 
+export async function deleteCollector(name: string) {
+  const res = await request(`/api/configs/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  return res.json()
+}
+
+export async function renameCollector(oldName: string, newName: string) {
+  const res = await request(`/api/configs/${encodeURIComponent(oldName)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ new_name: newName }),
+  })
+  return res.json()
+}
+
 export async function getSubscriptionContent(clashName: string) {
   const res = await request(`/api/sub/${clashName}/content`)
   return res.json()
