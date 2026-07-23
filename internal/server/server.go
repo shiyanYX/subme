@@ -868,16 +868,22 @@ func (s *Server) refreshProvider(p *db.Provider) {
 		}
 	}
 
-	s.addLog(LevelDebug, fmt.Sprintf("fetching subscription: %s", maskURL(result.SubscriptionURL)))
-	fetchStart := time.Now()
-	subscriptionYAML, err := fetchSubscription(result.SubscriptionURL, s.collectCfg.Proxy)
-	if err != nil {
-		s.addLog(LevelError, fmt.Sprintf("fetch subscription failed for %s (%v): %v", name, time.Since(fetchStart), err))
-		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
-		s.notifyIfNeeded(name, false, fmt.Sprintf("fetch subscription failed: %v", err))
-		return
+	var subscriptionYAML []byte
+	if len(result.SubscriptionContent) > 0 {
+		s.addLog(LevelDebug, fmt.Sprintf("using subscription content from collector (%d bytes)", len(result.SubscriptionContent)))
+		subscriptionYAML = result.SubscriptionContent
+	} else {
+		s.addLog(LevelDebug, fmt.Sprintf("fetching subscription: %s", maskURL(result.SubscriptionURL)))
+		fetchStart := time.Now()
+		subscriptionYAML, err = fetchSubscription(result.SubscriptionURL, s.collectCfg.Proxy)
+		if err != nil {
+			s.addLog(LevelError, fmt.Sprintf("fetch subscription failed for %s (%v): %v", name, time.Since(fetchStart), err))
+			s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
+			s.notifyIfNeeded(name, false, fmt.Sprintf("fetch subscription failed: %v", err))
+			return
+		}
+		s.addLog(LevelDebug, fmt.Sprintf("subscription fetched (%d bytes) in %v", len(subscriptionYAML), time.Since(fetchStart)))
 	}
-	s.addLog(LevelDebug, fmt.Sprintf("subscription fetched (%d bytes) in %v", len(subscriptionYAML), time.Since(fetchStart)))
 
 	if err := s.cache.Set(name, subscriptionYAML); err != nil {
 		s.addLog(LevelError, fmt.Sprintf("cache write failed for %s: %v", name, err))

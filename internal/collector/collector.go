@@ -24,22 +24,24 @@ func (c Config) ScriptPath() string {
 }
 
 type Result struct {
-	Success         bool
-	PanelURL        string
-	SubscriptionURL string
-	UpdateConfig    map[string]string
-	ViaProxy        bool
-	Error           string
-	Stderr          string
+	Success             bool
+	PanelURL            string
+	SubscriptionURL     string
+	SubscriptionContent []byte
+	UpdateConfig        map[string]string
+	ViaProxy            bool
+	Error               string
+	Stderr              string
 }
 
 type collectorOutput struct {
-	Success         bool              `json:"success"`
-	PanelURL        string            `json:"panel_url"`
-	SubscriptionURL string            `json:"subscription_url"`
-	UpdateConfig    map[string]string `json:"update_config,omitempty"`
-	ViaProxy        bool              `json:"via_proxy"`
-	Error           string            `json:"error,omitempty"`
+	Success             bool              `json:"success"`
+	PanelURL            string            `json:"panel_url"`
+	SubscriptionURL     string            `json:"subscription_url"`
+	SubscriptionContent string            `json:"subscription_content,omitempty"`
+	UpdateConfig        map[string]string `json:"update_config,omitempty"`
+	ViaProxy            bool              `json:"via_proxy"`
+	Error               string            `json:"error,omitempty"`
 }
 
 func Run(ctx context.Context, cfg Config) (*Result, error) {
@@ -77,13 +79,14 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	}
 
 	result := &Result{
-		Success:         out.Success,
-		PanelURL:        out.PanelURL,
-		SubscriptionURL: out.SubscriptionURL,
-		UpdateConfig:    out.UpdateConfig,
-		ViaProxy:        out.ViaProxy,
-		Error:           out.Error,
-		Stderr:          stderr.String(),
+		Success:             out.Success,
+		PanelURL:            out.PanelURL,
+		SubscriptionURL:     out.SubscriptionURL,
+		SubscriptionContent: []byte(out.SubscriptionContent),
+		UpdateConfig:        out.UpdateConfig,
+		ViaProxy:            out.ViaProxy,
+		Error:               out.Error,
+		Stderr:              stderr.String(),
 	}
 
 	return result, nil
