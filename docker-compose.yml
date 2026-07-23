@@ -11,4 +11,3 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
-      - SUBME_LOG_LEVEL=info

@@ -45,7 +45,6 @@ type Server struct {
 	logSubs       map[string]chan LogEntry
 	logSubMu      sync.Mutex
 	collectorsDir string
-	minLogLevel   string
 }
 
 func New(database *db.DB, cacheDir string, settings *config.SystemSettings, collectorsDir string) (*Server, error) {
@@ -70,7 +69,6 @@ func New(database *db.DB, cacheDir string, settings *config.SystemSettings, coll
 		collectCfg: collector.Config{
 			Proxy: settings.Proxy,
 		},
-		minLogLevel: LevelInfo,
 	}
 
 	settings.RefreshInterval = defaultRefreshInterval(srv.settings.RefreshInterval)
@@ -93,22 +91,13 @@ func (s *Server) LogError(msg string) {
 	s.addLog(LevelError, msg)
 }
 
-func (s *Server) SetLogLevel(level string) {
-	s.logMu.Lock()
-	defer s.logMu.Unlock()
-	s.minLogLevel = level
-}
+func (s *Server) SetLogLevel(string) {}
 
 func (s *Server) LogLevel() string {
-	s.logMu.Lock()
-	defer s.logMu.Unlock()
-	return s.minLogLevel
+	return LevelInfo
 }
 
 func (s *Server) addLog(level, msg string) {
-	if !levelEnabled(s.minLogLevel, level) {
-		return
-	}
 	entry := LogEntry{Time: time.Now(), Level: level, Message: msg}
 	s.logMu.Lock()
 	s.logs = append(s.logs, entry)

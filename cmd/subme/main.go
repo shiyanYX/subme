@@ -50,12 +50,6 @@ func main() {
 		log.Fatalf("create server: %v", err)
 	}
 
-	logLevel := "info"
-	if envLevel := os.Getenv("SUBME_LOG_LEVEL"); envLevel != "" {
-		logLevel = envLevel
-	}
-	srv.SetLogLevel(logLevel)
-
 	handler := srv.Handler()
 
 	hasUsers, _ := database.HasUsers()

@@ -4,7 +4,7 @@ dist/
 *.exe
 *.test
 data/
-cache/
+/cache/
 collectors/*
 !collectors/_shared/
 collectors/_shared/*
