@@ -30,6 +30,7 @@ type SystemSettings struct {
 	Port            int            `json:"port" yaml:"port"`
 	RefreshInterval int            `json:"refresh_interval" yaml:"refresh_interval"`
 	Proxy           string         `json:"proxy" yaml:"proxy"`
+	SubBaseURL      string         `json:"sub_base_url" yaml:"sub_base_url"`
 	WxPusher        WxPusherConfig `json:"wxpusher" yaml:"wxpusher"`
 	NotifyOn        NotifyOn       `json:"notify_on" yaml:"notify_on"`
 }

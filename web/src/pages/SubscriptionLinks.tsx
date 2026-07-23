@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getProviders, getSubscriptionContent } from '../api'
+import { getProviders, getSettings, getSubscriptionContent } from '../api'
 
 export default function SubscriptionLinks() {
   const [providers, setProviders] = useState<any[]>([])
@@ -9,17 +9,34 @@ export default function SubscriptionLinks() {
   const [contentData, setContentData] = useState<string>('')
   const [contentLoading, setContentLoading] = useState(false)
   const [contentTime, setContentTime] = useState<string>('')
+  const [subBaseURL, setSubBaseURL] = useState('')
 
   useEffect(() => {
     getProviders().then(p => setProviders(Array.isArray(p) ? p : [])).catch(() => {})
+    getSettings().then(s => { if (s?.sub_base_url) setSubBaseURL(s.sub_base_url) }).catch(() => {})
   }, [])
 
-  const getLocalURL = (clashName: string) => {
+  const getSubURL = (clashName: string) => {
+    if (subBaseURL) {
+      const base = subBaseURL.replace(/\/+$/, '')
+      return `${base}/sub/${clashName}`
+    }
     return `${window.location.protocol}//${window.location.hostname}:9090/sub/${clashName}`
   }
 
   const copyURL = (url: string) => {
-    navigator.clipboard.writeText(url)
+    try {
+      navigator.clipboard.writeText(url)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
     setCopied(url)
     setTimeout(() => setCopied(null), 2000)
   }
@@ -78,7 +95,7 @@ export default function SubscriptionLinks() {
           </thead>
           <tbody>
             {providers.map(p => {
-              const url = getLocalURL(p.clash_name)
+              const url = getSubURL(p.clash_name)
               return (
                 <tr key={p.id}>
                   <td><strong>{p.clash_name}</strong></td>
@@ -133,7 +150,7 @@ export default function SubscriptionLinks() {
 {`proxy-providers:
   my-provider:
     type: http
-    url: "${providers.length > 0 ? getLocalURL(providers[0].clash_name).replace(providers[0].clash_name, '你的订阅名称') : 'http://subme:9090/sub/你的订阅名称'}"
+    url: "${providers.length > 0 ? getSubURL(providers[0].clash_name).replace(providers[0].clash_name, '你的订阅名称') : 'http://subme:9090/sub/你的订阅名称'}"
     interval: 3600`}
         </pre>
       </div>

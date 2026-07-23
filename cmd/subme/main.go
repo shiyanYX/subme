@@ -108,6 +108,9 @@ func loadOrInitSettings(database *db.DB, defaultPort int) *config.SystemSettings
 	if proxy, err := database.GetSetting("proxy"); err == nil {
 		settings.Proxy = proxy
 	}
+	if subBaseURL, err := database.GetSetting("sub_base_url"); err == nil {
+		settings.SubBaseURL = subBaseURL
+	}
 	if appToken, err := database.GetSetting("wxpusher_app_token"); err == nil {
 		settings.WxPusher.AppToken = appToken
 	}

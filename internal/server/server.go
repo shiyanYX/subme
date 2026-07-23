@@ -702,6 +702,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	old := s.settings
 	s.db.SetSetting("refresh_interval", fmt.Sprintf("%d", newSettings.RefreshInterval))
 	s.db.SetSetting("proxy", newSettings.Proxy)
+	s.db.SetSetting("sub_base_url", newSettings.SubBaseURL)
 	s.db.SetSetting("wxpusher_app_token", newSettings.WxPusher.AppToken)
 	s.db.SetSetting("wxpusher_uids", fmt.Sprintf("%v", newSettings.WxPusher.UIDs))
 

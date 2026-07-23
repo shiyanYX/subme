@@ -6,6 +6,7 @@ export default function Settings() {
     port: 9090,
     refresh_interval: 3600,
     proxy: '',
+    sub_base_url: '',
     wxpusher: { app_token: '', uids: [] as string[] },
     notify_on: { collect_failure: true, refresh_failure: true },
   })
@@ -71,6 +72,11 @@ export default function Settings() {
         <div className="form-group">
           <label>全局代理</label>
           <input value={settings.proxy} onChange={e => setSettings({...settings, proxy: e.target.value})} placeholder="socks5://127.0.0.1:7890 或留空" />
+        </div>
+        <div className="form-group">
+          <label>订阅地址前缀</label>
+          <input value={settings.sub_base_url} onChange={e => setSettings({...settings, sub_base_url: e.target.value})} placeholder="留空则自动生成（如 http://192.168.1.83:9090）" />
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>设置后订阅链接显示为：{settings.sub_base_url || '{自动}'}/sub/&#123;名称&#125;</span>
         </div>
       </div>
 
