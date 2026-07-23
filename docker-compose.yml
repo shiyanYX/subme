@@ -1,15 +1,18 @@
-version: "3.8"
-
 services:
   subme:
-    build: .
+    image: ghcr.io/shiyanyx/subme:latest
     container_name: subme
     restart: unless-stopped
     ports:
       - "9090:9090"
     volumes:
       - ./collectors:/app/collectors
-      - ./cache:/app/cache
-      - ./data:/app/data
+      - subme-cache:/app/cache
+      - subme-data:/app/data
     environment:
       - TZ=Asia/Shanghai
+      - SUBME_LOG_LEVEL=info
+
+volumes:
+  subme-cache:
+  subme-data:
