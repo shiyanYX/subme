@@ -10,6 +10,9 @@ export default function Collectors() {
   const [msg, setMsg] = useState('')
   const [renaming, setRenaming] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
+  const [overwriting, setOverwriting] = useState<string | null>(null)
+  const [overJs, setOverJs] = useState<File | null>(null)
+  const [overYaml, setOverYaml] = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const yamlRef = useRef<HTMLInputElement>(null)
 
@@ -17,7 +20,6 @@ export default function Collectors() {
     const c = await getCollectors().catch(() => [])
     setCollectors(Array.isArray(c) ? c : [])
   }
-
   useEffect(() => { load() }, [])
 
   const handleUpload = async () => {
@@ -25,21 +27,37 @@ export default function Collectors() {
     setUploading(true)
     setMsg('')
     try {
-      const exists = collectors.includes(name)
       const res = await uploadCollector(name, jsFile, yamlFile || undefined)
       if (res.error) {
         setMsg('上传失败: ' + res.error)
       } else {
-        setMsg(exists ? '覆盖成功: ' + name : '上传成功: ' + name)
-        setName('')
-        setJsFile(null)
-        setYamlFile(null)
+        setMsg('上传成功: ' + name)
+        setName(''); setJsFile(null); setYamlFile(null)
         if (fileRef.current) fileRef.current.value = ''
         if (yamlRef.current) yamlRef.current.value = ''
         load()
       }
     } catch (e: any) {
       setMsg('上传失败: ' + (e.message || 'unknown'))
+    }
+    setUploading(false)
+  }
+
+  const handleOverwrite = async (c: string) => {
+    if (!overJs) return
+    setUploading(true)
+    setMsg('')
+    try {
+      const res = await uploadCollector(c, overJs, overYaml || undefined)
+      if (res.error) {
+        setMsg('覆盖失败: ' + res.error)
+      } else {
+        setMsg('覆盖成功: ' + c)
+        setOverwriting(null); setOverJs(null); setOverYaml(null)
+        load()
+      }
+    } catch (e: any) {
+      setMsg('覆盖失败: ' + (e.message || 'unknown'))
     }
     setUploading(false)
   }
@@ -57,17 +75,14 @@ export default function Collectors() {
 
   const handleRename = async (oldName: string) => {
     if (!newName.trim() || newName.trim() === oldName) {
-      setRenaming(null)
-      setNewName('')
-      return
+      setRenaming(null); setNewName(''); return
     }
     const res = await renameCollector(oldName, newName.trim())
     if (res.error) {
       setMsg('重命名失败: ' + res.error)
     } else {
       setMsg('重命名成功: ' + oldName + ' -> ' + newName.trim())
-      setRenaming(null)
-      setNewName('')
+      setRenaming(null); setNewName('')
       load()
     }
   }
@@ -76,10 +91,12 @@ export default function Collectors() {
     <div>
       <h2 style={{ fontSize: 20, marginBottom: 16 }}>Collector 管理</h2>
 
+      {msg && <div style={{ marginBottom: 10, fontSize: 13, color: msg.includes('失败') ? 'red' : 'green' }}>{msg}</div>}
+
       <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-title">上传 / 覆盖 Collector</div>
+        <div className="card-title">新建 Collector</div>
         <div className="form-group">
-          <label>名称（字母、数字、横线、下划线、点）</label>
+          <label>名称</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="my-provider" />
         </div>
         <div className="form-group">
@@ -87,12 +104,11 @@ export default function Collectors() {
           <input type="file" ref={fileRef} accept=".js" onChange={e => setJsFile(e.target.files?.[0] || null)} />
         </div>
         <div className="form-group">
-          <label>config.yaml <span style={{ color: '#999' }}>（可选，不传则自动生成模板）</span></label>
+          <label>config.yaml <span style={{ color: '#999' }}>（可选）</span></label>
           <input type="file" ref={yamlRef} accept=".yaml,.yml" onChange={e => setYamlFile(e.target.files?.[0] || null)} />
         </div>
-        {msg && <div style={{ marginBottom: 10, fontSize: 13, color: msg.includes('失败') ? 'red' : 'green' }}>{msg}</div>}
         <button className="btn btn-primary" onClick={handleUpload} disabled={uploading || !name || !jsFile}>
-          {uploading ? '上传中...' : (collectors.includes(name) ? '覆盖上传' : '上传')}
+          {uploading ? '上传中...' : '上传'}
         </button>
       </div>
 
@@ -125,6 +141,8 @@ export default function Collectors() {
                       </>
                     ) : (
                       <>
+                        <button className="btn btn-sm" onClick={() => { setOverwriting(overwriting === c ? null : c); setOverJs(null); setOverYaml(null) }}
+                          style={{ marginRight: 8 }}>覆盖</button>
                         <button className="btn btn-sm" onClick={() => { setRenaming(c); setNewName('') }} style={{ marginRight: 8 }}>重命名</button>
                         <button className="btn btn-sm btn-danger" onClick={() => handleDelete(c)}>删除</button>
                       </>
@@ -134,6 +152,23 @@ export default function Collectors() {
               ))}
             </tbody>
           </table>
+        )}
+        {overwriting && (
+          <div style={{ padding: 12, borderTop: '1px solid var(--border)', marginTop: 8 }}>
+            <div className="form-row">
+              <div className="form-group">
+                <label>collector.js</label>
+                <input type="file" accept=".js" onChange={e => setOverJs(e.target.files?.[0] || null)} />
+              </div>
+              <div className="form-group">
+                <label>config.yaml <span style={{ color: '#999' }}>（可选）</span></label>
+                <input type="file" accept=".yaml,.yml" onChange={e => setOverYaml(e.target.files?.[0] || null)} />
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={() => handleOverwrite(overwriting)} disabled={uploading || !overJs}>
+              {uploading ? '覆盖中...' : `覆盖「${overwriting}」`}
+            </button>
+          </div>
         )}
       </div>
     </div>
