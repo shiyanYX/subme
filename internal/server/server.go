@@ -1052,15 +1052,13 @@ func maskURL(rawURL string) string {
 	return u.Scheme + "://" + u.Host + u.Path
 }
 
-func fetchSubscription(rawURL, proxy string) ([]byte, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-
+func tryFetch(rawURL, proxy string) ([]byte, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("User-Agent", "SubMe/1.0")
-
 	if proxy != "" {
 		proxyURL, parseErr := url.Parse(proxy)
 		if parseErr == nil {
@@ -1068,22 +1066,30 @@ func fetchSubscription(rawURL, proxy string) ([]byte, error) {
 			client.Transport = transport
 		}
 	}
-
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch error: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("status: %d", resp.StatusCode)
 	}
+	return io.ReadAll(resp.Body)
+}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+func fetchSubscription(rawURL, proxy string) ([]byte, error) {
+	if proxy != "" {
+		body, err := tryFetch(rawURL, proxy)
+		if err == nil {
+			return body, nil
+		}
+		body, err2 := tryFetch(rawURL, "")
+		if err2 == nil {
+			return body, nil
+		}
+		return nil, fmt.Errorf("proxy: %v; direct: %v", err, err2)
 	}
-	return body, nil
+	return tryFetch(rawURL, "")
 }
 
 func defaultRefreshInterval(interval int) int {
