@@ -1078,18 +1078,18 @@ func tryFetch(rawURL, proxy string) ([]byte, error) {
 }
 
 func fetchSubscription(rawURL, proxy string) ([]byte, error) {
+	body, err := tryFetch(rawURL, "")
+	if err == nil {
+		return body, nil
+	}
 	if proxy != "" {
-		body, err := tryFetch(rawURL, proxy)
-		if err == nil {
-			return body, nil
-		}
-		body, err2 := tryFetch(rawURL, "")
+		body, err2 := tryFetch(rawURL, proxy)
 		if err2 == nil {
 			return body, nil
 		}
-		return nil, fmt.Errorf("proxy: %v; direct: %v", err, err2)
+		return nil, fmt.Errorf("direct: %v; proxy: %v", err, err2)
 	}
-	return tryFetch(rawURL, "")
+	return nil, err
 }
 
 func defaultRefreshInterval(interval int) int {
