@@ -897,7 +897,7 @@ func (s *Server) refreshProvider(p *db.Provider) {
 		s.addLog(LevelError, fmt.Sprintf("collector failed for %s (%v): %s", name, collectorDuration, result.Error))
 		if result.Stderr != "" {
 			for _, line := range strings.Split(strings.TrimSpace(result.Stderr), "\n") {
-				s.addLog(LevelDebug, fmt.Sprintf("collector %s: %s", name, line))
+				s.addLog(LevelDebug, fmt.Sprintf("%s> %s", name, line))
 			}
 		}
 		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
@@ -908,7 +908,7 @@ func (s *Server) refreshProvider(p *db.Provider) {
 	s.addLog(LevelDebug, fmt.Sprintf("collector succeeded for %s (%v) via_proxy=%v", name, collectorDuration, result.ViaProxy))
 	if result.Stderr != "" {
 		for _, line := range strings.Split(strings.TrimSpace(result.Stderr), "\n") {
-			s.addLog(LevelDebug, fmt.Sprintf("collector %s: %s", name, line))
+			s.addLog(LevelDebug, fmt.Sprintf("%s> %s", name, line))
 		}
 	}
 
