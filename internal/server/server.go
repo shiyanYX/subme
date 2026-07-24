@@ -895,12 +895,22 @@ func (s *Server) refreshProvider(p *db.Provider) {
 
 	if !result.Success {
 		s.addLog(LevelError, fmt.Sprintf("collector failed for %s (%v): %s", name, collectorDuration, result.Error))
+		if result.Stderr != "" {
+			for _, line := range strings.Split(strings.TrimSpace(result.Stderr), "\n") {
+				s.addLog(LevelDebug, fmt.Sprintf("[collector/%s] %s", name, line))
+			}
+		}
 		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
 		s.notifyIfNeeded(name, false, result.Error)
 		return
 	}
 
 	s.addLog(LevelDebug, fmt.Sprintf("collector succeeded for %s (%v) via_proxy=%v", name, collectorDuration, result.ViaProxy))
+	if result.Stderr != "" {
+		for _, line := range strings.Split(strings.TrimSpace(result.Stderr), "\n") {
+			s.addLog(LevelDebug, fmt.Sprintf("[collector/%s] %s", name, line))
+		}
+	}
 
 	if result.PanelURL != "" && result.PanelURL != p.PanelURL {
 		s.addLog(LevelInfo, fmt.Sprintf("updating panel_url for %s: %s", name, result.PanelURL))
