@@ -72,7 +72,7 @@ export default function Dashboard() {
               )}
               <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 13 }}>
                 <span>{p.proxy_count} 节点</span>
-                <span>{p.last_fetch ? `更新: ${p.last_fetch}` : '暂无缓存'}</span>
+                <span>{p.last_fetch ? `上次更新成功: ${p.last_fetch}` : '暂无缓存'}</span>
               </div>
               <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
                 <button className="btn btn-sm" onClick={() => handleRefresh(p.id)}>刷新</button>
