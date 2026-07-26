@@ -67,6 +67,7 @@ func main() {
 	}, func(level, msg string) {
 		srv.Logf(level, "%s", msg)
 	})
+	srv.SetScheduler(sched)
 	sched.Start(context.Background())
 
 	httpServer := &http.Server{

@@ -23,6 +23,7 @@ import (
 	"github.com/subme-app/subme/internal/config"
 	"github.com/subme-app/subme/internal/db"
 	"github.com/subme-app/subme/internal/notify"
+	"github.com/subme-app/subme/internal/scheduler"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,6 +46,7 @@ type Server struct {
 	logSubs       map[string]chan LogEntry
 	logSubMu      sync.Mutex
 	collectorsDir string
+	sched         *scheduler.Scheduler
 }
 
 func New(database *db.DB, cacheDir string, settings *config.SystemSettings, collectorsDir string) (*Server, error) {
@@ -73,6 +75,10 @@ func New(database *db.DB, cacheDir string, settings *config.SystemSettings, coll
 
 	settings.RefreshInterval = defaultRefreshInterval(srv.settings.RefreshInterval)
 	return srv, nil
+}
+
+func (s *Server) SetScheduler(sched *scheduler.Scheduler) {
+	s.sched = sched
 }
 
 func (s *Server) Logf(level, format string, args ...interface{}) {
@@ -237,7 +243,7 @@ rules:
 
 func (s *Server) handleGetSubscription(w http.ResponseWriter, r *http.Request) {
 	clashName := r.PathValue("clashName")
-	s.addLog(LevelDebug, fmt.Sprintf("subscription request: clash_name=%s remote=%s", clashName, r.RemoteAddr))
+	s.addLog(LevelInfo, fmt.Sprintf("subscription pull: clash_name=%s remote=%s", clashName, r.RemoteAddr))
 	entry, err := s.cache.Get(clashName)
 	if err != nil {
 		s.addLog(LevelWarn, fmt.Sprintf("subscription not found: %s", clashName))
@@ -722,6 +728,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if old.RefreshInterval != newSettings.RefreshInterval {
 		s.addLog(LevelDebug, fmt.Sprintf("refresh interval changed: %d -> %d", old.RefreshInterval, newSettings.RefreshInterval))
+	}
+	if s.sched != nil && old.RefreshInterval != newSettings.RefreshInterval {
+		s.sched.UpdateInterval(r.Context(), newSettings.RefreshInterval)
+		s.addLog(LevelInfo, fmt.Sprintf("scheduler restarted with interval %ds", newSettings.RefreshInterval))
 	}
 
 	writeJSON(w, s.settings)

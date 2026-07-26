@@ -36,30 +36,31 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.running = true
 	ctx, s.cancel = context.WithCancel(ctx)
 	s.mu.Unlock()
+	go s.run(ctx)
+}
 
-	go func() {
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
+func (s *Scheduler) run(ctx context.Context) {
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				if s.logFn != nil {
-					s.logFn("info", "scheduler: auto refresh starting")
-				}
-				if err := s.refreshFn(ctx); err != nil {
-					if s.logFn != nil {
-						s.logFn("error", "scheduler: refresh error: "+err.Error())
-					}
-				}
-			case <-ctx.Done():
-				if s.logFn != nil {
-					s.logFn("info", "scheduler: stopped")
-				}
-				return
+	for {
+		select {
+		case <-ticker.C:
+			if s.logFn != nil {
+				s.logFn("info", "scheduler: auto refresh starting")
 			}
+			if err := s.refreshFn(ctx); err != nil {
+				if s.logFn != nil {
+					s.logFn("error", "scheduler: refresh error: "+err.Error())
+				}
+			}
+		case <-ctx.Done():
+			if s.logFn != nil {
+				s.logFn("info", "scheduler: stopped")
+			}
+			return
 		}
-	}()
+	}
 }
 
 func (s *Scheduler) Stop() {
@@ -69,4 +70,17 @@ func (s *Scheduler) Stop() {
 		s.cancel()
 	}
 	s.running = false
+}
+
+func (s *Scheduler) UpdateInterval(ctx context.Context, interval int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interval = time.Duration(interval) * time.Second
+	if s.running {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		ctx, s.cancel = context.WithCancel(ctx)
+		go s.run(ctx)
+	}
 }
