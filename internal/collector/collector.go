@@ -28,10 +28,18 @@ type Result struct {
 	PanelURL            string
 	SubscriptionURL     string
 	SubscriptionContent []byte
+	UserInfo            *UserInfo
 	UpdateConfig        map[string]string
 	ViaProxy            bool
 	Error               string
 	Stderr              string
+}
+
+type UserInfo struct {
+	Upload   int64 `json:"upload"`
+	Download int64 `json:"download"`
+	Total    int64 `json:"total"`
+	Expire   int64 `json:"expire"`
 }
 
 type collectorOutput struct {
@@ -39,6 +47,7 @@ type collectorOutput struct {
 	PanelURL            string            `json:"panel_url"`
 	SubscriptionURL     string            `json:"subscription_url"`
 	SubscriptionContent string            `json:"subscription_content,omitempty"`
+	UserInfo            *UserInfo         `json:"user_info,omitempty"`
 	UpdateConfig        map[string]string `json:"update_config,omitempty"`
 	ViaProxy            bool              `json:"via_proxy"`
 	Error               string            `json:"error,omitempty"`
@@ -83,6 +92,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		PanelURL:            out.PanelURL,
 		SubscriptionURL:     out.SubscriptionURL,
 		SubscriptionContent: []byte(out.SubscriptionContent),
+		UserInfo:            out.UserInfo,
 		UpdateConfig:        out.UpdateConfig,
 		ViaProxy:            out.ViaProxy,
 		Error:               out.Error,

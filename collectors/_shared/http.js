@@ -60,7 +60,7 @@ function doSocks(proxyUrl, host, port, method, path, headers, body) {
         const opts = { socket, host, path, method, headers, timeout: 15000 };
         if (port === 443) opts.rejectUnauthorized = false;
         const req = mod.request(opts, (r) => {
-          let d = ""; r.on("data", c => d += c); r.on("end", () => { cleanup(); resolve({ status: r.statusCode, body: d }); });
+          let d = ""; r.on("data", c => d += c); r.on("end", () => { cleanup(); resolve({ status: r.statusCode, body: d, headers: r.headers }); });
         });
         req.on("error", (e) => { cleanup(); reject(e); });
         if (body) req.write(body);
@@ -83,7 +83,7 @@ function doHTTPProxy(proxyUrl, host, port, method, path, headers, body) {
       });
       preq.on("connect", (res, socket) => {
         const req = https.request({ socket, host, path, method, headers, timeout: 10000, rejectUnauthorized: false },
-          (r) => { let d = ""; r.on("data", c => d += c); r.on("end", () => resolve({ status: r.statusCode, body: d })); });
+          (r) => { let d = ""; r.on("data", c => d += c); r.on("end", () => resolve({ status: r.statusCode, body: d, headers: r.headers })); });
         req.on("error", reject);
         req.on("timeout", () => { req.destroy(); reject(new Error("inner timeout")); });
         if (body) req.write(body);
@@ -99,13 +99,14 @@ function doHTTPProxy(proxyUrl, host, port, method, path, headers, body) {
   return doDirect(p.hostname, parseInt(p.port) || 8080, method, absURL, headers, body);
 }
 
-function request(method, host, port, path, body, authToken, useProxy) {
+function request(method, host, port, path, body, authToken, useProxy, customHeaders) {
   const proxy = (useProxy !== false) ? detectProxy() : null;
   const headers = {
     "User-Agent": "SubMe/1.0",
     "Accept": "application/json",
     "Content-Type": "application/json",
     ...(authToken ? { "Authorization": authToken } : {}),
+    ...(customHeaders || {}),
   };
   if (body) headers["Content-Length"] = Buffer.byteLength(body);
 
@@ -114,23 +115,23 @@ function request(method, host, port, path, body, authToken, useProxy) {
   return doHTTPProxy(proxy.url, host, port, method, path, headers, body);
 }
 
-function apiGET(host, path, token, useProxy) {
-  return request("GET", host, 443, path, null, token, useProxy);
+function apiGET(host, path, token, useProxy, customHeaders) {
+  return request("GET", host, 443, path, null, token, useProxy, customHeaders);
 }
 
-function apiPOST(host, path, body, token, useProxy) {
-  return request("POST", host, 443, path, body, token, useProxy);
+function apiPOST(host, path, body, token, useProxy, customHeaders) {
+  return request("POST", host, 443, path, body, token, useProxy, customHeaders);
 }
 
-function requestFollowRedirect(method, host, port, path, body, authToken, useProxy, redirects) {
+function requestFollowRedirect(method, host, port, path, body, authToken, useProxy, redirects, customHeaders) {
   redirects = redirects || 0;
   if (redirects > 5) return Promise.reject(new Error("too many redirects"));
-  return request(method, host, port, path, body, authToken, useProxy).then(r => {
+  return request(method, host, port, path, body, authToken, useProxy, customHeaders).then(r => {
     if (r.status >= 300 && r.status < 400 && r.headers && r.headers.location) {
       const loc = r.headers.location;
       const u = loc.startsWith("http") ? new URL(loc) : new URL(loc, "https://" + host);
       console.error("[debug] redirect:", r.status, "->", u.href);
-      return requestFollowRedirect(method, u.hostname, parseInt(u.port) || 443, u.pathname + u.search, body, authToken, useProxy, redirects + 1);
+      return requestFollowRedirect(method, u.hostname, parseInt(u.port) || 443, u.pathname + u.search, body, authToken, useProxy, redirects + 1, customHeaders);
     }
     return r;
   });

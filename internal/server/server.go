@@ -252,6 +252,11 @@ func (s *Server) handleGetSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.Header().Set("Cache-Control", "no-cache")
+	if entry.UserInfo != nil {
+		header := fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d",
+			entry.UserInfo.Upload, entry.UserInfo.Download, entry.UserInfo.Total, entry.UserInfo.Expire)
+		w.Header().Set("Subscription-Userinfo", header)
+	}
 	w.Write(entry.YAML)
 }
 
@@ -264,11 +269,15 @@ func (s *Server) handleGetSubscriptionContent(w http.ResponseWriter, r *http.Req
 		writeJSON(w, map[string]string{"error": "subscription not found"})
 		return
 	}
-	writeJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"clash_name": clashName,
 		"yaml":       string(entry.YAML),
 		"last_fetch": entry.LastFetch.Format("2006-01-02 15:04:05"),
-	})
+	}
+	if entry.UserInfo != nil {
+		resp["user_info"] = entry.UserInfo
+	}
+	writeJSON(w, resp)
 }
 
 func countProxies(yamlData []byte) int {
@@ -959,10 +968,14 @@ func (s *Server) refreshProvider(p *db.Provider) {
 		s.addLog(LevelDebug, fmt.Sprintf("subscription fetched (%d bytes) in %v", len(subscriptionYAML), time.Since(fetchStart)))
 	}
 
-	if err := s.cache.Set(name, subscriptionYAML); err != nil {
+	if err := s.cache.Set(name, subscriptionYAML, result.UserInfo); err != nil {
 		s.addLog(LevelError, fmt.Sprintf("cache write failed for %s: %v", name, err))
 		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
 		return
+	}
+	if result.UserInfo != nil {
+		s.addLog(LevelDebug, fmt.Sprintf("userinfo cached for %s: upload=%d download=%d total=%d expire=%d",
+			name, result.UserInfo.Upload, result.UserInfo.Download, result.UserInfo.Total, result.UserInfo.Expire))
 	}
 
 	proxyCount := countProxies(subscriptionYAML)
@@ -1138,7 +1151,7 @@ func tryFetch(rawURL, proxy string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "SubMe/1.0")
+	req.Header.Set("User-Agent", "clash-verge/2.4.0")
 	if proxy != "" {
 		proxyURL, parseErr := url.Parse(proxy)
 		if parseErr == nil {

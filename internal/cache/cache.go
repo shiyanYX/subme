@@ -7,11 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/subme-app/subme/internal/collector"
 )
 
 type Entry struct {
-	YAML      []byte    `json:"yaml"`
-	LastFetch time.Time `json:"last_fetch"`
+	YAML      []byte            `json:"yaml"`
+	LastFetch time.Time         `json:"last_fetch"`
+	UserInfo  *collector.UserInfo `json:"user_info,omitempty"`
 }
 
 type Cache struct {
@@ -38,10 +41,11 @@ func (c *Cache) Get(key string) (*Entry, error) {
 	return &e, nil
 }
 
-func (c *Cache) Set(key string, data []byte) error {
+func (c *Cache) Set(key string, data []byte, userInfo *collector.UserInfo) error {
 	e := Entry{
 		YAML:      data,
 		LastFetch: time.Now(),
+		UserInfo:  userInfo,
 	}
 	raw, err := json.Marshal(e)
 	if err != nil {
