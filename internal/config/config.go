@@ -8,12 +8,13 @@ import (
 )
 
 type ProviderConfig struct {
-	ClashName   string `yaml:"clash_name"`
-	Interval    int    `yaml:"interval"`
-	PanelURL    string `yaml:"panel_url"`
-	LandingPage string `yaml:"landing_page"`
-	Username    string `yaml:"username"`
-	Password    string `yaml:"password"`
+	ClashName    string `yaml:"clash_name"`
+	Interval     int    `yaml:"interval"`
+	ScheduleMode string `yaml:"schedule_mode"`
+	PanelURL     string `yaml:"panel_url"`
+	LandingPage  string `yaml:"landing_page"`
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
 }
 
 type WxPusherConfig struct {
@@ -49,6 +50,9 @@ func LoadProviderConfig(path string) (*ProviderConfig, error) {
 	}
 	if pc.Interval <= 0 {
 		pc.Interval = 3600
+	}
+	if pc.ScheduleMode == "" {
+		pc.ScheduleMode = "follow_global"
 	}
 	return &pc, nil
 }

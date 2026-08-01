@@ -33,8 +33,12 @@ A one-shot `subme update` CLI command that runs all **Collectors** immediately.
 _Avoid_: one-time run
 
 **Auto Refresh**:
-A built-in scheduler that re-runs all **Collectors** on a configurable interval (per-Provider, per-Collector configurable).
+A built-in scheduler that re-runs **Collectors** on a configurable interval.
 _Avoid_: cron, timer, scheduler (in code, but not in glossary)
+
+**Schedule Mode**:
+A **Provider**-level setting that determines how its **Collector** is refreshed. Two modes: `follow_global` (refreshed by the global scheduler alongside all other `follow_global` providers) and `independent` (refreshed by its own dedicated timer using its `interval` field). Default is `follow_global`.
+_Avoid_: 独立模式, 跟随模式, auto/manual
 
 **Clash Subscription**:
 A URL that, when fetched, returns a YAML document in Clash format containing proxies, proxy-groups, and rules.
@@ -60,6 +64,8 @@ _Avoid_: 用户, client, end-user
 > **Dev:** "When a **Subscriber** adds a **Provider's** subscription URL, do we fetch it immediately or on a schedule?"
 > **Domain expert:** "Both — fetch immediately on add, then refresh periodically."
 
-## Flagged ambiguities
+**Flagged ambiguities**:
 
 - "面板插件" was initially used to mean a shared Collector per Panel type — resolved: each **Provider** gets its own **Collector** directory, even if they use the same **Panel** software.
+- The `interval` field in `config.yaml` was previously a no-op — will be repurposed as the refresh interval for `independent` **Schedule Mode**.
+- Refresh history (success/failure records per **Provider**) — design in progress.

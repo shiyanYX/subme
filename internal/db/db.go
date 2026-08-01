@@ -12,6 +12,7 @@ type Provider struct {
 	ClashName     string `json:"clash_name"`
 	CollectorName string `json:"collector_name"`
 	Interval      int    `json:"interval"`
+	ScheduleMode  string `json:"schedule_mode"`
 	PanelURL      string `json:"panel_url"`
 	LandingPage   string `json:"landing_page"`
 	Username      string `json:"username"`
@@ -56,6 +57,7 @@ func (d *DB) migrate() error {
 		password TEXT NOT NULL DEFAULT '',
 		config_path TEXT NOT NULL DEFAULT '',
 		interval INTEGER NOT NULL DEFAULT 3600,
+		schedule_mode TEXT NOT NULL DEFAULT 'follow_global',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -75,11 +77,13 @@ func (d *DB) migrate() error {
 	}
 	// Add collector_name column if upgrading from older schema
 	d.db.Exec(`ALTER TABLE providers ADD COLUMN collector_name TEXT NOT NULL DEFAULT ''`)
+	// Add schedule_mode column if upgrading from older schema
+	d.db.Exec(`ALTER TABLE providers ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'follow_global'`)
 	return nil
 }
 
 func (d *DB) ListProviders() ([]Provider, error) {
-	rows, err := d.db.Query(`SELECT id, clash_name, collector_name, interval, panel_url, landing_page, username, config_path FROM providers ORDER BY clash_name`)
+	rows, err := d.db.Query(`SELECT id, clash_name, collector_name, interval, schedule_mode, panel_url, landing_page, username, config_path FROM providers ORDER BY clash_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +91,11 @@ func (d *DB) ListProviders() ([]Provider, error) {
 	var providers []Provider
 	for rows.Next() {
 		var p Provider
-		if err := rows.Scan(&p.ID, &p.ClashName, &p.CollectorName, &p.Interval, &p.PanelURL, &p.LandingPage, &p.Username, &p.ConfigPath); err != nil {
+		if err := rows.Scan(&p.ID, &p.ClashName, &p.CollectorName, &p.Interval, &p.ScheduleMode, &p.PanelURL, &p.LandingPage, &p.Username, &p.ConfigPath); err != nil {
 			return nil, err
+		}
+		if p.ScheduleMode == "" {
+			p.ScheduleMode = "follow_global"
 		}
 		providers = append(providers, p)
 	}
@@ -97,17 +104,33 @@ func (d *DB) ListProviders() ([]Provider, error) {
 
 func (d *DB) GetProvider(id int64) (*Provider, error) {
 	p := &Provider{}
-	err := d.db.QueryRow(`SELECT id, clash_name, collector_name, interval, panel_url, landing_page, username, password, config_path FROM providers WHERE id = ?`, id).
-		Scan(&p.ID, &p.ClashName, &p.CollectorName, &p.Interval, &p.PanelURL, &p.LandingPage, &p.Username, &p.Password, &p.ConfigPath)
+	err := d.db.QueryRow(`SELECT id, clash_name, collector_name, interval, schedule_mode, panel_url, landing_page, username, password, config_path FROM providers WHERE id = ?`, id).
+		Scan(&p.ID, &p.ClashName, &p.CollectorName, &p.Interval, &p.ScheduleMode, &p.PanelURL, &p.LandingPage, &p.Username, &p.Password, &p.ConfigPath)
 	if err != nil {
 		return nil, err
+	}
+	if p.ScheduleMode == "" {
+		p.ScheduleMode = "follow_global"
+	}
+	return p, nil
+}
+
+func (d *DB) GetProviderByClashName(name string) (*Provider, error) {
+	p := &Provider{}
+	err := d.db.QueryRow(`SELECT id, clash_name, collector_name, interval, schedule_mode, panel_url, landing_page, username, password, config_path FROM providers WHERE clash_name = ?`, name).
+		Scan(&p.ID, &p.ClashName, &p.CollectorName, &p.Interval, &p.ScheduleMode, &p.PanelURL, &p.LandingPage, &p.Username, &p.Password, &p.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if p.ScheduleMode == "" {
+		p.ScheduleMode = "follow_global"
 	}
 	return p, nil
 }
 
 func (d *DB) CreateProvider(p *Provider) (int64, error) {
-	res, err := d.db.Exec(`INSERT INTO providers (clash_name, collector_name, interval, panel_url, landing_page, username, password, config_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ClashName, p.CollectorName, p.Interval, p.PanelURL, p.LandingPage, p.Username, p.Password, p.ConfigPath)
+	res, err := d.db.Exec(`INSERT INTO providers (clash_name, collector_name, interval, schedule_mode, panel_url, landing_page, username, password, config_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ClashName, p.CollectorName, p.Interval, p.ScheduleMode, p.PanelURL, p.LandingPage, p.Username, p.Password, p.ConfigPath)
 	if err != nil {
 		return 0, err
 	}
@@ -115,8 +138,8 @@ func (d *DB) CreateProvider(p *Provider) (int64, error) {
 }
 
 func (d *DB) UpdateProvider(p *Provider) error {
-	_, err := d.db.Exec(`UPDATE providers SET clash_name=?, collector_name=?, interval=?, panel_url=?, landing_page=?, username=?, password=? WHERE id=?`,
-		p.ClashName, p.CollectorName, p.Interval, p.PanelURL, p.LandingPage, p.Username, p.Password, p.ID)
+	_, err := d.db.Exec(`UPDATE providers SET clash_name=?, collector_name=?, interval=?, schedule_mode=?, panel_url=?, landing_page=?, username=?, password=? WHERE id=?`,
+		p.ClashName, p.CollectorName, p.Interval, p.ScheduleMode, p.PanelURL, p.LandingPage, p.Username, p.Password, p.ID)
 	return err
 }
 

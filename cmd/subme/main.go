@@ -62,13 +62,14 @@ func main() {
 	}
 
 	sched := scheduler.New(settings.RefreshInterval, func(ctx context.Context) error {
-		srv.RefreshAllSync()
+		srv.RefreshGlobalSync()
 		return nil
 	}, func(level, msg string) {
 		srv.Logf(level, "%s", msg)
 	})
 	srv.SetScheduler(sched)
 	sched.Start(context.Background())
+	srv.SyncScheduler()
 
 	httpServer := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *port),

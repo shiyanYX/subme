@@ -1,6 +1,16 @@
 import { useState, useEffect } from 'react'
 import { getDashboard, refreshAll, refreshProvider } from '../api'
 
+function formatGB(bytes: number): string {
+  if (!bytes || bytes <= 0) return '-'
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+function formatExpire(ts: number): string {
+  if (!ts || ts <= 0) return '-'
+  return new Date(ts * 1000).toLocaleDateString()
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<any>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -74,6 +84,19 @@ export default function Dashboard() {
                 <span>{p.proxy_count} 节点</span>
                 <span>{p.last_fetch ? `上次更新成功: ${p.last_fetch}` : '暂无缓存'}</span>
               </div>
+              {p.user_info && p.user_info.total > 0 && (
+                <div style={{ marginTop: 10, fontSize: 13 }}>
+                  <div style={{ display: 'flex', gap: 16, color: '#333' }}>
+                    <span>已用 <b>{formatGB(p.user_info.upload + p.user_info.download)}</b></span>
+                    <span>剩余 <b style={{ color: '#1976d2' }}>{formatGB(Math.max(p.user_info.total - p.user_info.upload - p.user_info.download, 0))}</b></span>
+                    <span>总量 <b>{formatGB(p.user_info.total)}</b></span>
+                    <span>到期 <b>{formatExpire(p.user_info.expire)}</b></span>
+                  </div>
+                  <div style={{ height: 6, background: '#eee', borderRadius: 3, marginTop: 6, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', background: '#1976d2', borderRadius: 3, width: `${Math.min((p.user_info.upload + p.user_info.download) / p.user_info.total * 100, 100)}%` }} />
+                  </div>
+                </div>
+              )}
               <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
                 <button className="btn btn-sm" onClick={() => handleRefresh(p.id)}>刷新</button>
               </div>

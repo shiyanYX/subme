@@ -29,6 +29,18 @@ import (
 
 var webFS fs.FS
 
+const (
+	ScheduleModeFollowGlobal = "follow_global"
+	ScheduleModeIndependent  = "independent"
+)
+
+func normalizeScheduleMode(m string) string {
+	if m == ScheduleModeIndependent {
+		return ScheduleModeIndependent
+	}
+	return ScheduleModeFollowGlobal
+}
+
 type LogEntry struct {
 	Time    time.Time `json:"time"`
 	Level   string    `json:"level"`
@@ -79,6 +91,43 @@ func New(database *db.DB, cacheDir string, settings *config.SystemSettings, coll
 
 func (s *Server) SetScheduler(sched *scheduler.Scheduler) {
 	s.sched = sched
+}
+
+// SyncScheduler reconciles independent-mode provider timers with the current
+// provider set. Call after startup and after any provider create/update/delete.
+func (s *Server) SyncScheduler() {
+	s.syncScheduler()
+}
+
+func (s *Server) syncScheduler() {
+	if s.sched == nil {
+		return
+	}
+	providers, err := s.db.ListProviders()
+	if err != nil {
+		s.addLog(LevelError, fmt.Sprintf("sync scheduler list providers: %v", err))
+		return
+	}
+	independent := make(map[string]time.Duration)
+	for _, p := range providers {
+		if p.ScheduleMode != ScheduleModeIndependent {
+			continue
+		}
+		interval := time.Duration(p.Interval) * time.Second
+		if interval <= 0 {
+			interval = 3600 * time.Second
+		}
+		independent[p.ClashName] = interval
+	}
+	s.addLog(LevelDebug, fmt.Sprintf("sync scheduler: %d independent providers", len(independent)))
+	s.sched.SetIndependentProviders(func(ctx context.Context, name string) error {
+		p, err := s.db.GetProviderByClashName(name)
+		if err != nil {
+			return err
+		}
+		go s.refreshProvider(p)
+		return nil
+	}, independent)
 }
 
 func (s *Server) Logf(level, format string, args ...interface{}) {
@@ -321,6 +370,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			if entry, err := s.cache.Get(p.ClashName); err == nil {
 				card["last_fetch"] = entry.LastFetch.Format("2006-01-02 15:04:05")
 				card["proxy_count"] = countProxies(entry.YAML)
+				card["user_info"] = entry.UserInfo
 				totalProxies += card["proxy_count"].(int)
 			}
 		}
@@ -377,6 +427,7 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	if p.Interval <= 0 {
 		p.Interval = 3600
 	}
+	p.ScheduleMode = normalizeScheduleMode(p.ScheduleMode)
 
 	cfgPath := s.buildConfigPath(p.ClashName)
 	p.ConfigPath = cfgPath
@@ -393,7 +444,8 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.ID = id
-	s.addLog(LevelInfo, fmt.Sprintf("provider created: %s (collector=%s interval=%d)", p.ClashName, p.CollectorName, p.Interval))
+	s.syncScheduler()
+	s.addLog(LevelInfo, fmt.Sprintf("provider created: %s (collector=%s interval=%d mode=%s)", p.ClashName, p.CollectorName, p.Interval, p.ScheduleMode))
 	writeJSON(w, p)
 }
 
@@ -428,6 +480,10 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.ID = id
+	if p.Interval <= 0 {
+		p.Interval = 3600
+	}
+	p.ScheduleMode = normalizeScheduleMode(p.ScheduleMode)
 	old, _ := s.db.GetProvider(id)
 	if err := s.db.UpdateProvider(&p); err != nil {
 		s.addLog(LevelError, fmt.Sprintf("update provider %d db error: %v", id, err))
@@ -440,9 +496,10 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if old != nil {
-		s.addLog(LevelInfo, fmt.Sprintf("provider updated: %s (panel_url: %q -> %q, interval: %d -> %d)",
-			p.ClashName, old.PanelURL, p.PanelURL, old.Interval, p.Interval))
+		s.addLog(LevelInfo, fmt.Sprintf("provider updated: %s (panel_url: %q -> %q, interval: %d -> %d, mode: %s -> %s)",
+			p.ClashName, old.PanelURL, p.PanelURL, old.Interval, p.Interval, old.ScheduleMode, p.ScheduleMode))
 	}
+	s.syncScheduler()
 	writeJSON(w, p)
 }
 
@@ -464,6 +521,7 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.syncScheduler()
 	if p != nil {
 		s.addLog(LevelInfo, fmt.Sprintf("provider deleted: id=%d name=%s", id, p.ClashName))
 	} else {
@@ -563,7 +621,7 @@ func (s *Server) handleRefreshProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRefreshAll(w http.ResponseWriter, r *http.Request) {
 	s.addLog(LevelInfo, "manual refresh all triggered")
-	go s.refreshAll()
+	go s.refreshAll("")
 	writeJSON(w, map[string]string{"status": "started"})
 }
 
@@ -982,7 +1040,7 @@ func (s *Server) refreshProvider(p *db.Provider) {
 	s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新完成: %s (%d bytes, %d proxies, %v)", name, len(subscriptionYAML), proxyCount, time.Since(start)))
 }
 
-func (s *Server) refreshAll() {
+func (s *Server) refreshAll(mode string) {
 	start := time.Now()
 	s.addLog(LevelInfo, "[开始] 刷新全部 Provider")
 	providers, err := s.db.ListProviders()
@@ -991,7 +1049,16 @@ func (s *Server) refreshAll() {
 		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新全部失败 (%v)", time.Since(start)))
 		return
 	}
-	s.addLog(LevelDebug, fmt.Sprintf("refresh all: %d providers to refresh", len(providers)))
+	if mode != "" {
+		filtered := providers[:0]
+		for _, p := range providers {
+			if p.ScheduleMode == mode {
+				filtered = append(filtered, p)
+			}
+		}
+		providers = filtered
+	}
+	s.addLog(LevelDebug, fmt.Sprintf("refresh all: %d providers to refresh (mode=%s)", len(providers), mode))
 
 	var wg sync.WaitGroup
 	for _, p := range providers {
@@ -1006,7 +1073,13 @@ func (s *Server) refreshAll() {
 }
 
 func (s *Server) RefreshAllSync() {
-	s.refreshAll()
+	s.refreshAll("")
+}
+
+// RefreshGlobalSync refreshes only follow_global providers. Called by the
+// global scheduler tick; independent providers run on their own timers.
+func (s *Server) RefreshGlobalSync() {
+	s.refreshAll(ScheduleModeFollowGlobal)
 }
 
 func (s *Server) notifyIfNeeded(provider string, success bool, message string) {
@@ -1040,12 +1113,13 @@ func (s *Server) writeCollectorConfig(p db.Provider) error {
 		return err
 	}
 	pc := &config.ProviderConfig{
-		ClashName:   p.ClashName,
-		Interval:    p.Interval,
-		PanelURL:    p.PanelURL,
-		LandingPage: p.LandingPage,
-		Username:    p.Username,
-		Password:    p.Password,
+		ClashName:    p.ClashName,
+		Interval:     p.Interval,
+		ScheduleMode: p.ScheduleMode,
+		PanelURL:     p.PanelURL,
+		LandingPage:  p.LandingPage,
+		Username:     p.Username,
+		Password:     p.Password,
 	}
 	return config.SaveProviderConfig(s.buildConfigPath(p.ClashName), pc)
 }

@@ -28,6 +28,7 @@ export default function Providers() {
     username: '',
     password: '',
     interval: 3600,
+    schedule_mode: 'follow_global',
   }
 
   const [form, setForm] = useState<any>(formDefaults)
@@ -53,6 +54,7 @@ export default function Providers() {
       username: p.username || '',
       password: pw,
       interval: p.interval || 3600,
+      schedule_mode: p.schedule_mode || 'follow_global',
     })
     setEditing(p)
     setTestResult(null)
@@ -114,7 +116,7 @@ export default function Providers() {
                 <th>名称</th>
                 <th>面板地址</th>
                 <th>用户名</th>
-                <th>刷新间隔</th>
+                <th>刷新模式</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -126,7 +128,11 @@ export default function Providers() {
                     {p.panel_url || '-'}
                   </td>
                   <td>{p.username || '-'}</td>
-                  <td>{p.interval ? `${p.interval / 60}分钟` : '默认'}</td>
+                  <td>
+                    {p.schedule_mode === 'independent'
+                      ? `独立 · ${p.interval / 60}分钟`
+                      : '跟随全局'}
+                  </td>
                   <td>
                     <button className="btn btn-sm" onClick={() => openEdit(p)} style={{ marginRight: 4 }}>编辑</button>
                     <button className="btn btn-sm" onClick={() => handleRefresh(p.id)} style={{ marginRight: 4 }}>刷新</button>
@@ -169,10 +175,26 @@ export default function Providers() {
                 <input value={form.clash_name} onChange={e => setForm({...form, clash_name: e.target.value})} placeholder="fieniao-jichang" disabled={!!editing} />
               </div>
               <div className="form-group">
-                <label>刷新间隔（秒）</label>
-                <input type="number" value={form.interval} onChange={e => setForm({...form, interval: parseInt(e.target.value) || 3600})} />
+                <label>刷新模式</label>
+                <select value={form.schedule_mode} onChange={e => setForm({...form, schedule_mode: e.target.value})}>
+                  <option value="follow_global">跟随全局（默认）</option>
+                  <option value="independent">独立调度</option>
+                </select>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  独立调度：按下方间隔单独定时刷新；跟随全局：随全局设置一起刷新
+                </div>
               </div>
             </div>
+
+            {form.schedule_mode === 'independent' && (
+              <div className="form-group">
+                <label>刷新间隔（秒）</label>
+                <input type="number" value={form.interval} onChange={e => setForm({...form, interval: parseInt(e.target.value) || 3600})} />
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  仅独立调度模式生效
+                </div>
+              </div>
+            )}
 
             <div className="form-group">
               <label>面板地址（panel_url）</label>
