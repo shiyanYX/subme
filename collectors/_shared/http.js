@@ -11,6 +11,12 @@ function detectProxy() {
   return null;
 }
 
+function readBody(r, onDone) {
+  const chunks = [];
+  r.on("data", c => chunks.push(c));
+  r.on("end", () => onDone(Buffer.concat(chunks).toString("utf8")));
+}
+
 function doDirect(targetHost, targetPort, method, path, headers, body) {
   const mod = targetPort === 443 ? https : http;
   return new Promise((resolve, reject) => {
@@ -18,7 +24,7 @@ function doDirect(targetHost, targetPort, method, path, headers, body) {
       hostname: targetHost, port: targetPort, path, method, headers,
       timeout: 10000, rejectUnauthorized: false,
     }, (r) => {
-      let d = ""; r.on("data", c => d += c); r.on("end", () => { resolve({ status: r.statusCode, body: d, headers: r.headers }); });
+      readBody(r, d => { resolve({ status: r.statusCode, body: d, headers: r.headers }); });
     });
     req.on("error", reject);
     req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
@@ -60,7 +66,7 @@ function doSocks(proxyUrl, host, port, method, path, headers, body) {
         const opts = { socket, host, path, method, headers, timeout: 15000 };
         if (port === 443) opts.rejectUnauthorized = false;
         const req = mod.request(opts, (r) => {
-          let d = ""; r.on("data", c => d += c); r.on("end", () => { cleanup(); resolve({ status: r.statusCode, body: d, headers: r.headers }); });
+          readBody(r, d => { cleanup(); resolve({ status: r.statusCode, body: d, headers: r.headers }); });
         });
         req.on("error", (e) => { cleanup(); reject(e); });
         if (body) req.write(body);
@@ -83,7 +89,7 @@ function doHTTPProxy(proxyUrl, host, port, method, path, headers, body) {
       });
       preq.on("connect", (res, socket) => {
         const req = https.request({ socket, host, path, method, headers, timeout: 10000, rejectUnauthorized: false },
-          (r) => { let d = ""; r.on("data", c => d += c); r.on("end", () => resolve({ status: r.statusCode, body: d, headers: r.headers })); });
+          (r) => { readBody(r, d => resolve({ status: r.statusCode, body: d, headers: r.headers })); });
         req.on("error", reject);
         req.on("timeout", () => { req.destroy(); reject(new Error("inner timeout")); });
         if (body) req.write(body);
