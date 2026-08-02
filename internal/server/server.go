@@ -292,21 +292,34 @@ rules:
 
 func (s *Server) handleGetSubscription(w http.ResponseWriter, r *http.Request) {
 	clashName := r.PathValue("clashName")
-	s.addLog(LevelInfo, fmt.Sprintf("subscription pull: clash_name=%s remote=%s", clashName, r.RemoteAddr))
+	format := subscriptionFormatFor(r)
+	ua := r.UserAgent()
+	if ua == "" {
+		ua = "(none)"
+	}
+	s.addLog(LevelInfo, fmt.Sprintf("subscription pull: clash_name=%s format=%s ua=%s remote=%s", clashName, format, ua, r.RemoteAddr))
 	entry, err := s.cache.Get(clashName)
 	if err != nil {
 		s.addLog(LevelWarn, fmt.Sprintf("subscription not found: %s", clashName))
 		http.Error(w, "subscription not found", http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-yaml")
+	body := entry.Content(format)
+	switch format {
+	case "clash":
+		w.Header().Set("Content-Type", "application/x-yaml")
+	case "singbox":
+		w.Header().Set("Content-Type", "application/json")
+	default:
+		w.Header().Set("Content-Type", "text/plain")
+	}
 	w.Header().Set("Cache-Control", "no-cache")
 	if entry.UserInfo != nil {
 		header := fmt.Sprintf("upload=%d; download=%d; total=%d; expire=%d",
 			entry.UserInfo.Upload, entry.UserInfo.Download, entry.UserInfo.Total, entry.UserInfo.Expire)
 		w.Header().Set("Subscription-Userinfo", header)
 	}
-	w.Write(entry.YAML)
+	w.Write(body)
 }
 
 func (s *Server) handleGetSubscriptionContent(w http.ResponseWriter, r *http.Request) {
@@ -1009,24 +1022,36 @@ func (s *Server) refreshProvider(p *db.Provider) {
 		}
 	}
 
-	var subscriptionYAML []byte
+	formats := cache.Formats{}
 	if len(result.SubscriptionContent) > 0 {
-		s.addLog(LevelDebug, fmt.Sprintf("using subscription content from collector (%d bytes)", len(result.SubscriptionContent)))
-		subscriptionYAML = result.SubscriptionContent
-	} else {
-		s.addLog(LevelDebug, fmt.Sprintf("fetching subscription: %s", maskURL(result.SubscriptionURL)))
-		fetchStart := time.Now()
-		subscriptionYAML, err = fetchSubscription(result.SubscriptionURL, s.collectCfg.Proxy)
-		if err != nil {
-			s.addLog(LevelError, fmt.Sprintf("fetch subscription failed for %s (%v): %v", name, time.Since(fetchStart), err))
-			s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
-			s.notifyIfNeeded(name, false, fmt.Sprintf("fetch subscription failed: %v", err))
-			return
+		formats.Clash = result.SubscriptionContent
+		s.addLog(LevelDebug, fmt.Sprintf("using collector content (%d bytes) as clash/yaml format", len(result.SubscriptionContent)))
+	}
+	fetchFormat := func(ua string) []byte {
+		body, fetchErr := fetchSubscription(result.SubscriptionURL, ua, s.collectCfg.Proxy)
+		if fetchErr != nil {
+			s.addLog(LevelWarn, fmt.Sprintf("fetch subscription (ua=%s) failed for %s: %v", ua, name, fetchErr))
+			return nil
 		}
-		s.addLog(LevelDebug, fmt.Sprintf("subscription fetched (%d bytes) in %v", len(subscriptionYAML), time.Since(fetchStart)))
+		return body
+	}
+	if len(formats.Clash) == 0 {
+		formats.Clash = fetchFormat(uaClash)
+	}
+	if len(formats.SingBox) == 0 {
+		formats.SingBox = fetchFormat(uaSingBox)
+	}
+	if len(formats.V2Ray) == 0 {
+		formats.V2Ray = fetchFormat(uaV2RayN)
+	}
+	if len(formats.Clash) == 0 && len(formats.V2Ray) == 0 && len(formats.SingBox) == 0 {
+		s.addLog(LevelError, fmt.Sprintf("all subscription formats failed for %s", name))
+		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
+		s.notifyIfNeeded(name, false, "fetch subscription failed: all formats unavailable")
+		return
 	}
 
-	if err := s.cache.Set(name, subscriptionYAML, result.UserInfo); err != nil {
+	if err := s.cache.Set(name, formats, result.UserInfo); err != nil {
 		s.addLog(LevelError, fmt.Sprintf("cache write failed for %s: %v", name, err))
 		s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新失败: %s (%v)", name, time.Since(start)))
 		return
@@ -1036,8 +1061,15 @@ func (s *Server) refreshProvider(p *db.Provider) {
 			name, result.UserInfo.Upload, result.UserInfo.Download, result.UserInfo.Total, result.UserInfo.Expire))
 	}
 
-	proxyCount := countProxies(subscriptionYAML)
-	s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新完成: %s (%d bytes, %d proxies, %v)", name, len(subscriptionYAML), proxyCount, time.Since(start)))
+	proxyCount := countProxies(formats.Clash)
+	primary := formats.Clash
+	if len(primary) == 0 {
+		primary = formats.V2Ray
+	}
+	if len(primary) == 0 {
+		primary = formats.SingBox
+	}
+	s.addLog(LevelInfo, fmt.Sprintf("[结束] 刷新完成: %s (clash=%dB v2ray=%dB singbox=%dB, %d proxies, %v)", name, len(formats.Clash), len(formats.V2Ray), len(formats.SingBox), proxyCount, time.Since(start)))
 }
 
 func (s *Server) refreshAll(mode string) {
@@ -1219,13 +1251,19 @@ func maskURL(rawURL string) string {
 	return u.Scheme + "://" + u.Host + u.Path
 }
 
-func tryFetch(rawURL, proxy string) ([]byte, error) {
+const (
+	uaClash   = "clash-verge/2.4.0"
+	uaSingBox = "sing-box/1.9.0"
+	uaV2RayN  = "v2rayN/7.24.2"
+)
+
+func tryFetch(rawURL, ua, proxy string) ([]byte, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "clash-verge/2.4.0")
+	req.Header.Set("User-Agent", ua)
 	if proxy != "" {
 		proxyURL, parseErr := url.Parse(proxy)
 		if parseErr == nil {
@@ -1244,19 +1282,45 @@ func tryFetch(rawURL, proxy string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func fetchSubscription(rawURL, proxy string) ([]byte, error) {
-	body, err := tryFetch(rawURL, "")
+func fetchSubscription(rawURL, ua, proxy string) ([]byte, error) {
+	body, err := tryFetch(rawURL, ua, "")
 	if err == nil {
 		return body, nil
 	}
 	if proxy != "" {
-		body, err2 := tryFetch(rawURL, proxy)
+		body, err2 := tryFetch(rawURL, ua, proxy)
 		if err2 == nil {
 			return body, nil
 		}
 		return nil, fmt.Errorf("direct: %v; proxy: %v", err, err2)
 	}
 	return nil, err
+}
+
+// subscriptionFormatFor maps a request to a cached subscription format,
+// mirroring the airport panels' User-Agent based dispatch: "clash" clients
+// get YAML, "sing" clients get sing-box JSON, everything else gets the
+// base64 URI list. An explicit ?format= parameter overrides the UA sniff.
+func subscriptionFormatFor(r *http.Request) string {
+	if f := strings.ToLower(r.URL.Query().Get("format")); f != "" {
+		switch f {
+		case "clash", "yaml":
+			return "clash"
+		case "singbox", "sing-box", "sing":
+			return "singbox"
+		case "v2ray", "v2rayn", "base64":
+			return "v2ray"
+		}
+	}
+	ua := strings.ToLower(r.UserAgent())
+	switch {
+	case strings.Contains(ua, "clash"):
+		return "clash"
+	case strings.Contains(ua, "sing"):
+		return "singbox"
+	default:
+		return "v2ray"
+	}
 }
 
 func defaultRefreshInterval(interval int) int {

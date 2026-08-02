@@ -41,7 +41,7 @@ A **Provider**-level setting that determines how its **Collector** is refreshed.
 _Avoid_: 独立模式, 跟随模式, auto/manual
 
 **Clash Subscription**:
-A URL that, when fetched, returns a YAML document in Clash format containing proxies, proxy-groups, and rules.
+A URL that, when fetched, returns subscription content for a client. Content format follows the **Panel's** User-Agent based dispatch (mirrored by SubMe): "clash" User-Agents receive a YAML document in Clash format (proxies, proxy-groups, rules), "sing-box" User-Agents receive sing-box JSON, all other clients receive a base64-encoded URI list (e.g. `hysteria2://` links for v2rayN). An explicit `?format=clash|singbox|v2ray` parameter overrides the User-Agent sniff.
 _Avoid_: 订阅链接, node list, config
 
 **Provider**:

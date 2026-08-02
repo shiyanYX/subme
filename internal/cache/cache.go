@@ -12,9 +12,28 @@ import (
 )
 
 type Entry struct {
-	YAML      []byte            `json:"yaml"`
-	LastFetch time.Time         `json:"last_fetch"`
-	UserInfo  *collector.UserInfo `json:"user_info,omitempty"`
+	YAML      []byte                `json:"yaml"`
+	Base64    []byte                `json:"base64,omitempty"`
+	SingBox   []byte                `json:"singbox,omitempty"`
+	LastFetch time.Time             `json:"last_fetch"`
+	UserInfo  *collector.UserInfo   `json:"user_info,omitempty"`
+}
+
+// Content returns the stored body for the given format. Formats:
+// "clash" (YAML), "v2ray" (base64 URI list), "singbox" (JSON).
+// Falls back to YAML when the requested format is unavailable.
+func (e *Entry) Content(format string) []byte {
+	switch format {
+	case "v2ray":
+		if len(e.Base64) > 0 {
+			return e.Base64
+		}
+	case "singbox":
+		if len(e.SingBox) > 0 {
+			return e.SingBox
+		}
+	}
+	return e.YAML
 }
 
 type Cache struct {
@@ -41,9 +60,18 @@ func (c *Cache) Get(key string) (*Entry, error) {
 	return &e, nil
 }
 
-func (c *Cache) Set(key string, data []byte, userInfo *collector.UserInfo) error {
+// Formats groups the subscription bodies per client format.
+type Formats struct {
+	Clash   []byte // Clash YAML
+	V2Ray   []byte // base64 URI list (v2rayN, NekoBox, etc.)
+	SingBox []byte // sing-box JSON
+}
+
+func (c *Cache) Set(key string, f Formats, userInfo *collector.UserInfo) error {
 	e := Entry{
-		YAML:      data,
+		YAML:      f.Clash,
+		Base64:    f.V2Ray,
+		SingBox:   f.SingBox,
 		LastFetch: time.Now(),
 		UserInfo:  userInfo,
 	}
